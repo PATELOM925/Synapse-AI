@@ -1,164 +1,105 @@
-# Flux AI Learning Studio
+# Synapse AI
 
-> **Flux** is a Next.js app for AI-powered learning sessions that adapt your uploaded source materials into notes, flashcards, quizzes, podcasts, interactive quests, and visual maps.
+Synapse AI is a study assistant for students, with a classroom API for teachers. It runs on a FastAPI backend, a Next.js frontend and an AI agent runtime.
 
-<!-- TODO: Add screenshots below -->
+Won the AgentShyft Hackathon (May 2026).
 
-## 📸 Screenshots
+## Why it matters
 
-### Landing Page
-![Landing page with mode selector and file upload](docs/screenshots/landing.png)
+Students get personal study help: a tutor that checks understanding as it explains, notes and flashcards on demand, and quizzes aimed at their weakest topics. Teachers get a view of how the class is doing, so the generated material stays under their oversight.
 
-### Session Dashboard
-![Session dashboard showing study history](docs/screenshots/dashboard-home.png)
-![File upload interface](docs/screenshots/file-upload.png)
-![Re-prompt functionality](docs/screenshots/re-prompt.png)
+## What it does
 
-### Study Modes
-![Smart notes output](docs/screenshots/smart-notes.png)
-![Flash cards interface](docs/screenshots/flash-cards.png)
----
+**Student side**
 
-## 🚀 Project Overview
+- Join a class with a class code.
+- Chat with an AI tutor on a topic. The reply streams over server-sent events. The tutor inserts comprehension checks between key ideas.
+- Generate smart notes and flashcards for a topic.
+- Take a diagnostic quiz on the classroom topics. The student's weakest topics are picked first. Answers update a knowledge map.
+- Take an assessment on a topic. The grader scores it and updates the knowledge map.
 
-Flux lets learners upload documents, images, audio/video, or enter topic text and instantly generate multi-modal study materials.
+**Teacher side (API)**
 
-Key capabilities:
+- Create a class, upload a syllabus, enroll students.
+- Invite one specific student by user ID. The invite has a code.
+- Attach material links (title and URL). No file upload.
+- View cohort analytics: average level per topic and a list of struggling topics.
+- Get a JSON progress report for a class. PDF export is not built.
 
-- Upload files using drag & drop or file picker
-- Choose active learning modes: `notes`, `flashcards`, `quiz`, `podcast`, `quest`, `game`
-- AI-powered session title generation and content extraction
-- Session history and persistence via Prisma + SQLite (or configured DB)
-- On-demand model generation via `/api/generate/[mode]` endpoints
-- Graceful mock fallback if API keys are missing
+## How it works
 
----
-
-## 🧩 Features
-
-- Modern responsive UI (Tailwind + shadcn/ui + framer-motion)
-- Attachments: PDF, audio, video, image
-- Multi-mode output:
-  - Notes with hierarchical Markdown structure
-  - JSON-structured flashcards and quizzes
-  - Narrative Quest storyline with choices
-  - Mind map-style visual graph data
-  - Podcast script / synthesized audio (ElevenLabs)
-- Session CRUD:
-  - Create sessions (`/api/sessions` POST)
-  - List sessions (`/api/sessions` GET)
-  - Delete one/all sessions (`/api/sessions/[id]` and DELETE)
-- Continuum-backed study content generation
-
----
-
-## 🛠️ Tech Stack
-
-- Next.js 16 (App Router)
-- React 19
-- TypeScript
-- Prisma (SQLite by default)
-- Zustand (state store)
-- Continuum Smart Inference (LLM), ElevenLabs (TTS)
-- Tailwind CSS v4 + shadcn components
-
----
-
-## ⚙️ Setup
-
-1. Clone repo
-
-```bash
-git clone <repo-url>
-cd 'flux'
+```mermaid
+flowchart LR
+  UI["Student UI (Next.js, frontend/src)"] -->|"POST /student/tutor/stream (SSE)"| API["FastAPI app (api/synapse/app.py)"]
+  UI -->|"notes, flashcards, assess, pipeline"| API
+  TC["Teacher API callers"] -->|"/teacher/classes, analytics, reports"| API
+  API --> RT["Continuum AgentRunner (agents/lifecycle.py)"]
+  RT -->|"MCP streamable HTTP, port 8888"| KB["KB MCP server (mcp_server/kb_server.py)"]
+  RT --> LLM["LLM gateway (Continuum, not in repo)"]
+  API --> DB[("Supabase Postgres (migrations 001 to 003)")]
 ```
 
-2. Install dependencies
+- **Agents.** `api/synapse/agents/` holds the agent definitions. `tutor.py` streams the tutor reply. `diagnostic.py` writes the quiz. `assessment.py` generates and grades assessments. `notes.py` and `flashcards.py` write study material. `material_pipeline.py` runs notes and flashcards in parallel for each topic, with a ScatterAgent and a structured merge.
+- **Runtime.** `agents/lifecycle.py` starts one shared runtime. It loads the ShyftLabs Continuum package and connects to the MCP server at startup. Continuum is not in this repo.
+- **MCP server.** `mcp_server/kb_server.py` is a FastMCP server named `synapse-kb`. It exposes five tools: `ingest_syllabus`, `search_source_material`, `get_topic_sources`, `list_topics` and `get_student_syllabus`. Search counts shared words between the query and each chunk. It does not use embeddings. The corpus is hard-coded: 6 topics and 21 text chunks.
+- **Streaming.** `routers/student/tutor.py` sends `start`, `content`, `check`, `tool`, `done` and `error` events. `agents/tutor.py` finds the `<<CHECK>>` blocks in the model output and sends them as `check` events.
+- **Memory.** Agents set a memory scope (USER or CONVERSATION) in `agents/lifecycle.py`. The memory backend is configured in Continuum, not in this repo.
+- **Knowledge map.** The evaluator in `routers/student/diagnose.py` and the grader in `routers/student/assess.py` update the `knowledge_maps` table.
+- **Teacher and classroom APIs.** `routers/teacher/classes.py` handles classes, syllabus, enrollment, invites and materials. `routers/teacher/analytics.py` and `routers/teacher/reports.py` handle cohort analytics and the summary. `routers/student/classroom.py` handles invites and the knowledge-gap start.
+- **Database.** `db/client.py` makes a Supabase client. The queries are in `db/student/queries.py` and `db/teacher/queries.py`. The SQL files are in `api/synapse/migrations/`. There is no migration runner. The SQL is applied by hand.
+
+## Tech stack
+
+Backend (`api/`): Python 3.11 or later, FastAPI, Pydantic, Supabase Python client, MCP Python SDK (`mcp.server.fastmcp`), ShyftLabs Continuum (not in repo).
+
+Frontend (`frontend/src/`, root `package.json`): Next.js 16.2.6 (App Router), React 19.2.4, TypeScript, Tailwind CSS v4, lucide-react, zustand.
+
+Earlier Flux prototype (`backend/src/`): Prisma with SQLite, tesseract.js (OCR), pdf2json, mammoth (DOCX), ElevenLabs SDK (audio).
+
+## Run it
+
+The frontend builds and runs from a clean clone (tested with Node 22):
 
 ```bash
-npm install
-# or pnpm install
+git clone https://github.com/PATELOM925/Synapse-AI.git
+cd Synapse-AI
+npm ci
+npm run build
+npm run start -- -p 3100     # pages /, /student, /teacher and /dashboard
 ```
 
-3. Copy `.env.local` from template and set keys
+The knowledge-base MCP server also runs on its own:
 
 ```bash
-cp .env.local.example .env.local
+cd api
+KB_SERVER_PORT=8888 python -m synapse.mcp_server.kb_server
 ```
 
-4. Update environment variables (set at least `DATABASE_URL`, `SMART_GATEWAY_URL`, `SMART_GATEWAY_API_KEY`, `ELEVENLABS_API_KEY` for full behavior)
+The FastAPI backend needs the ShyftLabs Continuum agent runtime, which is not in this repo, plus a Supabase project.
 
-5. Run Prisma migrations
+Environment variable names read by the code:
 
-```bash
-npm run db:migrate
-```
+- Synapse API: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`, `KB_MCP_URL` (optional), `KB_SERVER_PORT` (optional).
+- Synapse frontend: `NEXT_PUBLIC_API_URL` (optional, default `http://localhost:8000`).
 
-6. Start dev server
+## Team and roles
 
-```bash
-npm run dev
-```
+- **Awais Aziz.** Backend core. Created 40 of the 42 files under `api/`. This includes the agent runtime (`agents/lifecycle.py`), the agents, the MCP server, the tutor stream, the scatter pipeline, the models and the student routers. Also created the typed API client `frontend/src/lib/synapseApi.ts`.
+- **Om Patel.** Teacher and classroom flow. The commit "teacher flow added" adds the invite and material migration, the student classroom router (invites, accept, knowledge-gap start), and the teacher invite and material endpoints.
+- **Aman Shah.** Frontend. Created 50 of the 51 files under `frontend/src/`, including the landing page, the student and teacher pages, and the Flux dashboard and its helpers in `backend/src/`.
 
-7. Open http://localhost:3000
+## Status and limits
 
----
+This is a hackathon build. It is not production software.
 
-## 🧾 Environment Variables
+- The backend depends on the Continuum runtime, so it does not start from a clean clone.
+- The knowledge base is a small hard-coded corpus (6 topics, 21 chunks). Search is word overlap, not embeddings.
+- The teacher screens in the UI show sample data. The teacher and classroom API exists but the UI does not call it yet.
+- There is no login. API routes trust the IDs they receive.
+- Materials are stored as a title and a link. Audio and video are not processed.
+- No automated tests.
+- The repo also holds an earlier prototype, Flux (`/dashboard`, Prisma and SQLite), next to Synapse (`/student`, `/teacher`, FastAPI and Supabase).
 
-Add these to `.env.local`:
+## Links
 
-- `DATABASE_URL` (e.g. `file:./backend/prisma/dev.db`)
-- `SMART_GATEWAY_URL` (Continuum Smart Inference endpoint, for example `http://localhost:8787/v1`)
-- `SMART_GATEWAY_API_KEY` (Continuum Smart Inference API key)
-- `CONTINUUM_MODEL` (optional, defaults to `auto`)
-- `ELEVENLABS_API_KEY` (audio synthesis)
-
-> The existing `.env.local` in repository has placeholders and sample values, but please do not commit real secrets.
-
----
-
-## 🧪 Running Tests
-
-No dedicated test suite is included yet. Use the app manually:
-
-1. Create session with topic and file attachments
-2. Verify `/loading` path triggers generation
-3. Run each mode output in dashboard
-
----
-
-## 🗂 Project Structure
-
-- `frontend/src/app/` – Next.js routing, pages, and API route entrypoints
-- `frontend/src/components/` – UI components and mode-specific renderers
-- `frontend/src/lib/` – frontend utilities and Zustand store
-- `backend/src/` – server-side AI, file parsing, database adapter, and seed data
-- `backend/prisma/` – schema, migrations, and local SQLite database
-- `backend/continuum/` – Continuum backend service
-
----
-
-## ✅ Common Workflows
-
-1. Start on landing page
-2. Input a topic or upload files
-3. Pick one or more modes
-4. Hit Start Session
-5. Wait on `/loading` while AI generates content
-6. Explore session in `/dashboard/session/[id]`
-
----
-
-## 🛡️ Notes
-
-- If an external service key is missing, Flux falls back to mock content for stability.
-- Session metadata fields include counts for PDFs/audio/video/image and render the current active mode.
-
----
-
-## 🙌 Contributing
-
-1. Fork and create a feature branch
-2. Add tests/validate UI flows
-3. Open PR with changes and screenshots
+- Portfolio write-up: https://iampatelom.com/projects/synapse-ai
